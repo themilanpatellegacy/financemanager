@@ -1304,6 +1304,94 @@ body {
   .sf-row { grid-template-columns: 1fr; }
 }
 
+/* ════════════════════════════════════════════
+   EXPORT / IMPORT STYLES
+════════════════════════════════════════════ */
+
+.download-btn {
+  color: var(--gold) !important;
+  border-bottom: 2px solid transparent;
+  margin-right: 4px;
+}
+.download-btn:hover { color: var(--gold) !important; border-bottom-color: var(--gold); }
+
+.dl-section-title {
+  font-size: 0.58rem;
+  letter-spacing: 0.18em;
+  color: var(--orange);
+  font-weight: 700;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 7px;
+}
+
+.dl-btn {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.dl-btn:hover { border-color: var(--green); background: var(--bg-4); }
+.dl-btn-pdf:hover { border-color: var(--red); }
+
+.dl-icon { font-size: 1.4rem; }
+.dl-lbl { font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-primary); font-weight: 600; }
+.dl-fmt { font-size: 0.58rem; color: var(--text-muted); border: 1px solid var(--border); padding: 1px 5px; }
+
+.dl-btn:hover .dl-fmt { border-color: var(--green); color: var(--green); }
+.dl-btn-pdf:hover .dl-fmt { border-color: var(--red); color: var(--red); }
+
+/* Upload zone */
+.upload-zone {
+  background: var(--bg-3);
+  border: 2px dashed var(--border-bright);
+  padding: 28px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.upload-zone:hover,
+.upload-zone.drag-over {
+  border-color: var(--orange);
+  background: var(--orange-dim);
+}
+
+.uz-icon { font-size: 2rem; margin-bottom: 8px; }
+.uz-title { font-size: 0.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 5px; }
+.uz-sub { font-size: 0.62rem; color: var(--text-muted); line-height: 1.5; }
+
+/* Uploaded files list */
+.uploaded-file-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.uploaded-file-row:last-child { border-bottom: none; }
+
+.uf-icon { font-size: 1.4rem; flex-shrink: 0; }
+.uf-info { flex: 1; }
+.uf-name { font-size: 0.72rem; font-weight: 600; color: var(--text-primary); }
+.uf-meta { font-size: 0.6rem; color: var(--text-muted); margin-top: 2px; }
+.uf-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
 </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -1381,6 +1469,7 @@ body {
     <span class="nav-icon">▪</span> ROADMAP
   </button>
   <div class="nav-spacer"></div>
+  <button class="nav-btn download-btn" onclick="openDownloadModal()">⬇ EXPORT</button>
   <button class="nav-btn add-btn" onclick="openModal('investment')">＋ ADD ENTRY</button>
 </nav>
 
@@ -3495,6 +3584,570 @@ function saveExpenseEntry(){
 
 document.getElementById('modal-overlay')?.addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal();});
 document.addEventListener('click',e=>{if(!e.target.closest('.ticker-field-wrap'))document.getElementById('ticker-suggestions')?.classList.remove('open');});
+
+</script>
+<script>
+/* js/exportimport.js — Download Excel/PDF + Upload invoices/Excel */
+
+// ─────────────────────────────────────────────
+// EXPORT TO CSV (Excel-compatible)
+// ─────────────────────────────────────────────
+
+function exportToCSV(data, filename) {
+  if (!data || !data.length) { showToast('No data to export', 'red'); return; }
+  const headers = Object.keys(data[0]);
+  const rows = [
+    headers.join(','),
+    ...data.map(row =>
+      headers.map(h => {
+        const val = row[h] ?? '';
+        const str = String(val).replace(/"/g, '""');
+        return str.includes(',') || str.includes('"') || str.includes('\n') ? `"${str}"` : str;
+      }).join(',')
+    )
+  ];
+  downloadText(rows.join('\n'), filename, 'text/csv');
+  showToast(`✓ ${filename} downloaded`, 'green');
+}
+
+function downloadText(content, filename, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─────────────────────────────────────────────
+// EXPORT FUNCTIONS PER SECTION
+// ─────────────────────────────────────────────
+
+function exportPortfolioCSV() {
+  const s = DB.compute();
+  const rows = DB.investments.map(inv => ({
+    Date: inv.date,
+    Asset: inv.description,
+    Category: inv.category,
+    Type: inv.type,
+    'Invested ($)': inv.amount.toFixed(2),
+    Quantity: inv.qty,
+    'Buy Price ($)': inv.buyPrice.toFixed(inv.buyPrice < 1 ? 6 : 2),
+    'Live Price ($)': (DB.prices[inv.ticker] || inv.mktPrice).toFixed(inv.mktPrice < 1 ? 6 : 2),
+    'Current Value ($)': DB.getInvCurrentValue(inv).toFixed(2),
+    'P&L ($)': DB.getInvPnL(inv).toFixed(2),
+    'Return %': (DB.investments.length && inv.amount > 0 ? (DB.getInvPnL(inv) / inv.amount * 100).toFixed(2) : '0.00') + '%',
+    Ticker: inv.ticker || '',
+    Notes: inv.notes || '',
+  }));
+  // Add summary rows
+  rows.push({});
+  rows.push({ Date: 'SUMMARY', Asset: '', Category: '', Type: '', 'Invested ($)': s.ti.toFixed(2), Quantity: '', 'Buy Price ($)': '', 'Live Price ($)': '', 'Current Value ($)': s.tp.toFixed(2), 'P&L ($)': s.tgl.toFixed(2), 'Return %': (s.or * 100).toFixed(2) + '%', Ticker: '', Notes: '' });
+  exportToCSV(rows, `Milan_Portfolio_${today()}.csv`);
+}
+
+function exportIncomeCSV() {
+  const rows = DB.income.map(r => ({
+    Date: r.date,
+    'Amount ($)': r.amount.toFixed(2),
+    Category: r.category,
+    Source: r.source,
+    Method: r.method,
+    Recurring: r.recurring,
+    Notes: r.notes || '',
+  }));
+  const total = DB.income.reduce((s, r) => s + r.amount, 0);
+  rows.push({});
+  rows.push({ Date: 'TOTAL', 'Amount ($)': total.toFixed(2), Category: '', Source: DB.income.length + ' records', Method: '', Recurring: '', Notes: '' });
+  exportToCSV(rows, `Milan_Income_${today()}.csv`);
+}
+
+function exportExpensesCSV() {
+  const rows = DB.expenses.map(r => ({
+    Date: r.date,
+    'Amount ($)': r.amount.toFixed(2),
+    Category: r.category,
+    Description: r.description,
+    Method: r.method,
+    Recurring: r.recurring,
+    Notes: r.notes || '',
+  }));
+  const total = DB.expenses.reduce((s, r) => s + r.amount, 0);
+  rows.push({});
+  rows.push({ Date: 'TOTAL', 'Amount ($)': total.toFixed(2), Category: '', Description: DB.expenses.length + ' records', Method: '', Recurring: '', Notes: '' });
+  exportToCSV(rows, `Milan_Expenses_${today()}.csv`);
+}
+
+function exportNetWorthCSV() {
+  const s = DB.compute();
+  const rows = [];
+
+  rows.push({ Section: 'NET WORTH SUMMARY', Item: '', Value: '' });
+  rows.push({ Section: '', Item: 'Total Assets ($)', Value: s.tp.toFixed(2) });
+  rows.push({ Section: '', Item: 'Total Liabilities ($)', Value: s.te.toFixed(2) });
+  rows.push({ Section: '', Item: 'Net Worth ($)', Value: s.nw.toFixed(2) });
+  rows.push({ Section: '', Item: '$1M Progress', Value: (s.nw / 1e6 * 100).toFixed(2) + '%' });
+  rows.push({ Section: '', Item: 'Portfolio Return', Value: (s.or * 100).toFixed(2) + '%' });
+  rows.push({ Section: '', Item: 'Savings Rate', Value: (s.sr * 100).toFixed(2) + '%' });
+  rows.push({});
+  rows.push({ Section: 'ASSETS BY CATEGORY', Item: '', Value: '' });
+
+  Object.entries(s.cm).sort((a, b) => b[1].current - a[1].current).forEach(([cat, d]) => {
+    rows.push({ Section: cat, Item: `${(d.current / s.tp * 100).toFixed(1)}% of portfolio`, Value: '$' + d.current.toFixed(2) });
+  });
+
+  rows.push({});
+  rows.push({ Section: 'LIABILITIES', Item: '', Value: '' });
+  const expCats = {};
+  DB.expenses.forEach(r => { expCats[r.category] = (expCats[r.category] || 0) + r.amount; });
+  Object.entries(expCats).forEach(([cat, amt]) => {
+    rows.push({ Section: cat, Item: '', Value: '$' + amt.toFixed(2) });
+  });
+
+  exportToCSV(rows, `Milan_NetWorth_${today()}.csv`);
+}
+
+function exportOverviewCSV() {
+  const s = DB.compute();
+  const rows = [
+    { Metric: 'Net Worth ($)', Value: s.nw.toFixed(2) },
+    { Metric: 'Total Portfolio Value ($)', Value: s.tp.toFixed(2) },
+    { Metric: 'Total Invested ($)', Value: s.ti.toFixed(2) },
+    { Metric: 'Total Gain/Loss ($)', Value: s.tgl.toFixed(2) },
+    { Metric: 'Overall Return %', Value: (s.or * 100).toFixed(2) + '%' },
+    { Metric: 'Total Income ($)', Value: s.tin.toFixed(2) },
+    { Metric: 'Total Expenses ($)', Value: s.te.toFixed(2) },
+    { Metric: 'Savings Rate %', Value: (s.sr * 100).toFixed(2) + '%' },
+    { Metric: '$1M Progress %', Value: (s.nw / 1e6 * 100).toFixed(2) + '%' },
+    { Metric: '# Investments', Value: DB.investments.length },
+    { Metric: '# Income Records', Value: DB.income.length },
+    { Metric: '# Expense Records', Value: DB.expenses.length },
+    { Metric: 'Report Generated', Value: new Date().toLocaleString() },
+  ];
+  exportToCSV(rows, `Milan_Overview_${today()}.csv`);
+}
+
+// ─────────────────────────────────────────────
+// EXPORT TO PDF (using browser print)
+// ─────────────────────────────────────────────
+
+function exportPDF(section) {
+  const s = DB.compute();
+  const now = new Date().toLocaleString();
+
+  let content = '';
+
+  if (section === 'overview' || section === 'all') {
+    content += `
+      <h2>MARKET OVERVIEW</h2>
+      <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Net Worth</td><td>$${fmt(s.nw)}</td></tr>
+        <tr><td>Portfolio Value</td><td>$${fmt(s.tp)}</td></tr>
+        <tr><td>Total Invested</td><td>$${fmt(s.ti)}</td></tr>
+        <tr><td>Total Gain/Loss</td><td>${s.tgl >= 0 ? '+' : ''}$${fmt(Math.abs(s.tgl))}</td></tr>
+        <tr><td>Overall Return</td><td>${(s.or * 100).toFixed(2)}%</td></tr>
+        <tr><td>Total Income</td><td>$${fmt(s.tin)}</td></tr>
+        <tr><td>Total Expenses</td><td>$${fmt(s.te)}</td></tr>
+        <tr><td>Savings Rate</td><td>${(s.sr * 100).toFixed(2)}%</td></tr>
+        <tr><td>$1M Progress</td><td>${(s.nw / 1e6 * 100).toFixed(2)}%</td></tr>
+      </table>`;
+  }
+
+  if (section === 'portfolio' || section === 'all') {
+    content += `
+      <h2>INVESTMENT PORTFOLIO</h2>
+      <table>
+        <tr><th>Date</th><th>Asset</th><th>Category</th><th>Invested</th><th>Qty</th><th>Current Value</th><th>P&L</th><th>Return %</th><th>Ticker</th></tr>
+        ${DB.investments.map(inv => {
+          const cv = DB.getInvCurrentValue(inv);
+          const gl = DB.getInvPnL(inv);
+          const glp = inv.amount > 0 ? gl / inv.amount * 100 : 0;
+          return `<tr>
+            <td>${inv.date}</td><td>${inv.description}</td><td>${inv.category}</td>
+            <td>$${fmt(inv.amount)}</td><td>${inv.qty.toFixed(inv.qty < 1 ? 6 : 2)}</td>
+            <td>$${fmt(cv)}</td>
+            <td style="color:${gl >= 0 ? 'green' : 'red'}">${gl >= 0 ? '+' : ''}$${fmt(Math.abs(gl))}</td>
+            <td style="color:${glp >= 0 ? 'green' : 'red'}">${glp.toFixed(2)}%</td>
+            <td>${inv.ticker || '—'}</td>
+          </tr>`;
+        }).join('')}
+        <tr style="font-weight:bold;background:#f5f5f5">
+          <td colspan="3">TOTAL</td><td>$${fmt(s.ti)}</td><td></td><td>$${fmt(s.tp)}</td>
+          <td>${s.tgl >= 0 ? '+' : ''}$${fmt(Math.abs(s.tgl))}</td><td>${(s.or * 100).toFixed(2)}%</td><td></td>
+        </tr>
+      </table>`;
+  }
+
+  if (section === 'income' || section === 'all') {
+    const total = DB.income.reduce((a, r) => a + r.amount, 0);
+    content += `
+      <h2>INCOME RECORDS</h2>
+      <table>
+        <tr><th>Date</th><th>Amount</th><th>Category</th><th>Source</th><th>Method</th><th>Recurring</th></tr>
+        ${DB.income.map(r => `<tr><td>${r.date}</td><td style="color:green">+$${fmt(r.amount)}</td><td>${r.category}</td><td>${r.source}</td><td>${r.method}</td><td>${r.recurring}</td></tr>`).join('')}
+        <tr style="font-weight:bold;background:#f5f5f5"><td colspan="1">TOTAL</td><td style="color:green">$${fmt(total)}</td><td colspan="4">${DB.income.length} records</td></tr>
+      </table>`;
+  }
+
+  if (section === 'expenses' || section === 'all') {
+    const total = DB.expenses.reduce((a, r) => a + r.amount, 0);
+    content += `
+      <h2>EXPENSE RECORDS</h2>
+      <table>
+        <tr><th>Date</th><th>Amount</th><th>Category</th><th>Description</th><th>Method</th><th>Recurring</th></tr>
+        ${DB.expenses.map(r => `<tr><td>${r.date}</td><td style="color:red">-$${fmt(r.amount)}</td><td>${r.category}</td><td>${r.description}</td><td>${r.method}</td><td>${r.recurring}</td></tr>`).join('')}
+        <tr style="font-weight:bold;background:#f5f5f5"><td>TOTAL</td><td style="color:red">$${fmt(total)}</td><td colspan="4">${DB.expenses.length} records</td></tr>
+      </table>`;
+  }
+
+  if (section === 'networth' || section === 'all') {
+    content += `
+      <h2>NET WORTH STATEMENT</h2>
+      <table>
+        <tr><th>Category</th><th>Value ($)</th><th>% of Assets</th></tr>
+        ${Object.entries(s.cm).sort((a, b) => b[1].current - a[1].current).map(([cat, d]) =>
+          `<tr><td>${cat}</td><td>$${fmt(d.current)}</td><td>${(d.current / s.tp * 100).toFixed(2)}%</td></tr>`
+        ).join('')}
+        <tr style="font-weight:bold;background:#f5f5f5"><td>TOTAL ASSETS</td><td>$${fmt(s.tp)}</td><td>100%</td></tr>
+      </table>
+      <br>
+      <table>
+        <tr><th>Ratio</th><th>Value</th></tr>
+        <tr><td>Net Worth</td><td>$${fmt(s.nw)}</td></tr>
+        <tr><td>Assets / Liabilities</td><td>${s.te > 0 ? (s.tp / s.te).toFixed(0) + '×' : '∞'}</td></tr>
+        <tr><td>$1M Progress</td><td>${(s.nw / 1e6 * 100).toFixed(2)}%</td></tr>
+        <tr><td>Portfolio Return</td><td>${(s.or * 100).toFixed(2)}%</td></tr>
+      </table>`;
+  }
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Milan Patel — Financial Report</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Arial', sans-serif; font-size: 11px; color: #111; padding: 24px; }
+    .report-header { border-bottom: 3px solid #ff6600; padding-bottom: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
+    .report-title { font-size: 20px; font-weight: 700; color: #ff6600; letter-spacing: 0.1em; }
+    .report-sub { font-size: 11px; color: #888; margin-top: 2px; }
+    .report-meta { text-align: right; font-size: 10px; color: #888; }
+    h2 { font-size: 12px; font-weight: 700; letter-spacing: 0.15em; color: #ff6600; margin: 20px 0 8px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+    th { background: #1a1a1a; color: #fff; padding: 6px 8px; text-align: left; font-size: 9px; letter-spacing: 0.1em; }
+    td { padding: 5px 8px; border-bottom: 1px solid #eee; font-size: 10px; }
+    tr:nth-child(even) td { background: #fafafa; }
+    @media print { body { padding: 12px; } }
+  </style>
+</head>
+<body>
+  <div class="report-header">
+    <div>
+      <div class="report-title">MILAN PATEL — FINANCIAL REPORT</div>
+      <div class="report-sub">${section === 'all' ? 'Complete Financial Statement' : section.charAt(0).toUpperCase() + section.slice(1) + ' Report'}</div>
+    </div>
+    <div class="report-meta">Generated: ${now}<br>Net Worth: $${fmt(s.nw)}</div>
+  </div>
+  ${content}
+</body>
+</html>`);
+  win.document.close();
+  setTimeout(() => win.print(), 500);
+  showToast('✓ PDF ready — use Print → Save as PDF', 'green');
+}
+
+// ─────────────────────────────────────────────
+// DOWNLOAD MODAL
+// ─────────────────────────────────────────────
+
+function openDownloadModal() {
+  document.getElementById('modal-title').textContent = '⬇ EXPORT / DOWNLOAD';
+  document.getElementById('modal-body').innerHTML = `
+    <div style="margin-bottom:16px">
+      <div class="wiz-title">Choose format & section</div>
+
+      <div class="dl-section-title">EXCEL (CSV) — Opens in Excel, Google Sheets</div>
+      <div class="dl-grid">
+        <button class="dl-btn" onclick="exportOverviewCSV()">
+          <span class="dl-icon">📊</span>
+          <span class="dl-lbl">Overview</span>
+          <span class="dl-fmt">.CSV</span>
+        </button>
+        <button class="dl-btn" onclick="exportPortfolioCSV()">
+          <span class="dl-icon">📈</span>
+          <span class="dl-lbl">Portfolio</span>
+          <span class="dl-fmt">.CSV</span>
+        </button>
+        <button class="dl-btn" onclick="exportIncomeCSV()">
+          <span class="dl-icon">💵</span>
+          <span class="dl-lbl">Income</span>
+          <span class="dl-fmt">.CSV</span>
+        </button>
+        <button class="dl-btn" onclick="exportExpensesCSV()">
+          <span class="dl-icon">💸</span>
+          <span class="dl-lbl">Expenses</span>
+          <span class="dl-fmt">.CSV</span>
+        </button>
+        <button class="dl-btn" onclick="exportNetWorthCSV()">
+          <span class="dl-icon">💰</span>
+          <span class="dl-lbl">Net Worth</span>
+          <span class="dl-fmt">.CSV</span>
+        </button>
+      </div>
+
+      <div class="dl-section-title" style="margin-top:20px">PDF REPORT — Print or Save as PDF</div>
+      <div class="dl-grid">
+        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('overview')">
+          <span class="dl-icon">📋</span>
+          <span class="dl-lbl">Overview</span>
+          <span class="dl-fmt">PDF</span>
+        </button>
+        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('portfolio')">
+          <span class="dl-icon">📈</span>
+          <span class="dl-lbl">Portfolio</span>
+          <span class="dl-fmt">PDF</span>
+        </button>
+        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('income')">
+          <span class="dl-icon">💵</span>
+          <span class="dl-lbl">Income</span>
+          <span class="dl-fmt">PDF</span>
+        </button>
+        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('expenses')">
+          <span class="dl-icon">💸</span>
+          <span class="dl-lbl">Expenses</span>
+          <span class="dl-fmt">PDF</span>
+        </button>
+        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('networth')">
+          <span class="dl-icon">💰</span>
+          <span class="dl-lbl">Net Worth</span>
+          <span class="dl-fmt">PDF</span>
+        </button>
+        <button class="dl-btn dl-btn-pdf" style="border-color:var(--orange);color:var(--orange)" onclick="exportPDF('all')">
+          <span class="dl-icon">📑</span>
+          <span class="dl-lbl">Full Report</span>
+          <span class="dl-fmt">PDF</span>
+        </button>
+      </div>
+
+      <div class="dl-section-title" style="margin-top:20px">UPLOAD — Import Data</div>
+      <div class="upload-zone" id="upload-zone" ondrop="handleDrop(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)">
+        <div class="uz-icon">📁</div>
+        <div class="uz-title">Drop files here or click to browse</div>
+        <div class="uz-sub">Supports: Excel (.xlsx, .xls), CSV (.csv), Invoice PDF (.pdf), Images (.jpg, .png)</div>
+        <input type="file" id="file-upload-input" multiple accept=".xlsx,.xls,.csv,.pdf,.jpg,.jpeg,.png" onchange="handleFileUpload(this.files)" style="display:none" />
+        <button class="btn-primary" style="margin-top:12px" onclick="document.getElementById('file-upload-input').click()">Browse Files</button>
+      </div>
+
+      <div id="uploaded-files-list"></div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn-ghost" onclick="closeModal()">Close</button>
+    </div>
+  `;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+// ─────────────────────────────────────────────
+// FILE UPLOAD HANDLING
+// ─────────────────────────────────────────────
+
+const UPLOADED_FILES = [];
+
+function handleDragOver(e) {
+  e.preventDefault();
+  document.getElementById('upload-zone').classList.add('drag-over');
+}
+
+function handleDragLeave(e) {
+  document.getElementById('upload-zone').classList.remove('drag-over');
+}
+
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('upload-zone').classList.remove('drag-over');
+  handleFileUpload(e.dataTransfer.files);
+}
+
+function handleFileUpload(files) {
+  if (!files || !files.length) return;
+
+  Array.from(files).forEach(file => {
+    const id = Date.now() + Math.random();
+    const entry = {
+      id,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      date: new Date().toLocaleDateString(),
+      file,
+    };
+    UPLOADED_FILES.unshift(entry);
+
+    // If CSV — offer to import data
+    if (file.name.endsWith('.csv')) {
+      parseCSVFile(file, entry);
+    }
+  });
+
+  renderUploadedFiles();
+  showToast(`✓ ${files.length} file(s) uploaded successfully`, 'green');
+}
+
+function parseCSVFile(file, entry) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    const text = e.target.result;
+    const lines = text.trim().split('\n');
+    if (lines.length < 2) return;
+    const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
+    entry.csvHeaders = headers;
+    entry.csvRows = lines.length - 1;
+    entry.canImport = headers.includes('amount') || headers.includes('amount ($)');
+    renderUploadedFiles();
+  };
+  reader.readAsText(file);
+}
+
+function renderUploadedFiles() {
+  const el = document.getElementById('uploaded-files-list');
+  if (!el || !UPLOADED_FILES.length) return;
+
+  el.innerHTML = `
+    <div class="dl-section-title" style="margin-top:16px">UPLOADED FILES (${UPLOADED_FILES.length})</div>
+    ${UPLOADED_FILES.map(f => {
+      const icon = f.name.endsWith('.pdf') ? '📄' : f.name.endsWith('.csv') || f.name.endsWith('.xlsx') || f.name.endsWith('.xls') ? '📊' : '🖼️';
+      const size = f.size > 1024*1024 ? (f.size/1024/1024).toFixed(1)+' MB' : (f.size/1024).toFixed(0)+' KB';
+      return `
+        <div class="uploaded-file-row">
+          <span class="uf-icon">${icon}</span>
+          <div class="uf-info">
+            <div class="uf-name">${f.name}</div>
+            <div class="uf-meta">${size} · Uploaded ${f.date}${f.csvRows ? ` · ${f.csvRows} rows` : ''}</div>
+          </div>
+          <div class="uf-actions">
+            ${f.canImport ? `<button class="btn-primary" style="font-size:.6rem;padding:4px 10px" onclick="importCSVData(${f.id})">IMPORT DATA</button>` : ''}
+            <button class="btn-ghost" style="font-size:.6rem;padding:4px 10px" onclick="downloadUploadedFile(${f.id})">DOWNLOAD</button>
+            <button class="del-btn" onclick="removeUploadedFile(${f.id})">✕</button>
+          </div>
+        </div>`;
+    }).join('')}
+  `;
+}
+
+function downloadUploadedFile(id) {
+  const entry = UPLOADED_FILES.find(f => f.id === id);
+  if (!entry) return;
+  const url = URL.createObjectURL(entry.file);
+  const a = document.createElement('a');
+  a.href = url; a.download = entry.name;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function removeUploadedFile(id) {
+  const i = UPLOADED_FILES.findIndex(f => f.id === id);
+  if (i !== -1) UPLOADED_FILES.splice(i, 1);
+  renderUploadedFiles();
+}
+
+function importCSVData(id) {
+  const entry = UPLOADED_FILES.find(f => f.id === id);
+  if (!entry || !entry.file) return;
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    const text = e.target.result;
+    const lines = text.trim().split('\n');
+    const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
+
+    let imported = 0;
+
+    lines.slice(1).forEach(line => {
+      if (!line.trim()) return;
+      const vals = parseCSVLine(line);
+      const row = {};
+      headers.forEach((h, i) => row[h] = vals[i]?.replace(/"/g,'').trim() || '');
+
+      const amount = parseFloat(row['amount ($)'] || row['amount'] || 0);
+      const date = row['date'] || new Date().toISOString().slice(0,10);
+      if (!amount || isNaN(amount) || amount <= 0) return;
+
+      // Detect type from headers
+      if (headers.includes('invested ($)') || headers.includes('ticker') || headers.includes('qty') || headers.includes('quantity')) {
+        // Investment row
+        DB.investments.push({
+          id: DB.nextId(), date,
+          amount: parseFloat(row['invested ($)'] || row['amount ($)'] || amount),
+          category: row['category'] || 'Other',
+          description: row['asset'] || row['description'] || 'Imported',
+          type: row['type'] || 'Other',
+          qty: parseFloat(row['qty'] || row['quantity'] || 1),
+          buyPrice: parseFloat(row['buy price ($)'] || amount),
+          mktPrice: parseFloat(row['live price ($)'] || row['buy price ($)'] || amount),
+          ticker: row['ticker'] || '',
+          notes: row['notes'] || 'Imported from CSV',
+        });
+        imported++;
+      } else if (headers.includes('source')) {
+        // Income row
+        DB.income.push({
+          id: DB.nextId(), date, amount,
+          category: row['category'] || 'Other Income',
+          source: row['source'] || 'Imported',
+          method: row['method'] || 'Bank Transfer',
+          recurring: row['recurring'] || 'One-Time',
+          notes: row['notes'] || 'Imported from CSV',
+        });
+        imported++;
+      } else if (headers.includes('description')) {
+        // Expense row
+        DB.expenses.push({
+          id: DB.nextId(), date, amount,
+          category: row['category'] || 'Other Expense',
+          description: row['description'] || 'Imported',
+          method: row['method'] || 'Debit Card',
+          recurring: row['recurring'] || 'One-Time',
+          notes: row['notes'] || 'Imported from CSV',
+        });
+        imported++;
+      }
+    });
+
+    if (imported > 0) {
+      refreshAll();
+      showToast(`✓ ${imported} records imported from ${entry.name}`, 'green');
+      closeModal();
+    } else {
+      showToast('Could not detect data format. Use exported CSV as template.', 'red');
+    }
+  };
+  reader.readAsText(entry.file);
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { inQ = !inQ; }
+    else if (c === ',' && !inQ) { result.push(cur); cur = ''; }
+    else cur += c;
+  }
+  result.push(cur);
+  return result;
+}
+
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 </script>
 <script>
