@@ -3587,566 +3587,530 @@ document.addEventListener('click',e=>{if(!e.target.closest('.ticker-field-wrap')
 
 </script>
 <script>
-/* js/exportimport.js — Download Excel/PDF + Upload invoices/Excel */
+/* js/exportimport.js — Export & Upload. Uses DB.computeAll() */
 
-// ─────────────────────────────────────────────
-// EXPORT TO CSV (Excel-compatible)
-// ─────────────────────────────────────────────
-
-function exportToCSV(data, filename) {
-  if (!data || !data.length) { showToast('No data to export', 'red'); return; }
-  const headers = Object.keys(data[0]);
-  const rows = [
-    headers.join(','),
-    ...data.map(row =>
-      headers.map(h => {
-        const val = row[h] ?? '';
-        const str = String(val).replace(/"/g, '""');
-        return str.includes(',') || str.includes('"') || str.includes('\n') ? `"${str}"` : str;
-      }).join(',')
-    )
-  ];
-  downloadText(rows.join('\n'), filename, 'text/csv');
-  showToast(`✓ ${filename} downloaded`, 'green');
+// self-contained formatter — no dependency on render.js
+function xfmt(n) {
+  if (n === null || n === undefined || isNaN(n)) return '0.00';
+  var a = Math.abs(n);
+  if (a >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (a >= 1e3) return n.toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 });
+  return n.toFixed(2);
 }
 
-function downloadText(content, filename, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click();
+function todayStr() { return new Date().toISOString().slice(0,10); }
+
+// local risk map copy
+var XRISK = {
+  'Crypto':'Very High','Gold':'Medium','Stocks':'Medium-High',
+  'USD Bank':'Low','Euro Bank':'Low','YouTube':'Medium',
+  'Media/Tech':'High','Digital Marketing':'High'
+};
+
+/* ── CSV helpers ── */
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  var s = String(v);
+  return (s.indexOf(',') > -1 || s.indexOf('"') > -1 || s.indexOf('\n') > -1)
+    ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+
+function buildCSV(rows) {
+  if (!rows || !rows.length) return '';
+  var hdrs = Object.keys(rows[0]);
+  var lines = [ hdrs.map(csvCell).join(',') ];
+  for (var i = 0; i < rows.length; i++) {
+    lines.push(hdrs.map(function(h){ return csvCell(rows[i][h] !== undefined ? rows[i][h] : ''); }).join(','));
+  }
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+function dlCSV(csv, name) {
+  var blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+  var url  = URL.createObjectURL(blob);
+  var a    = document.createElement('a');
+  a.href   = url;
+  a.setAttribute('download', name);
+  document.body.appendChild(a);
+  a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
+  showToast('Downloaded: ' + name, 'green');
 }
 
-// ─────────────────────────────────────────────
-// EXPORT FUNCTIONS PER SECTION
-// ─────────────────────────────────────────────
+/* ════════════════════════════════════════════
+   CSV EXPORTS  — use DB.computeAll() which returns:
+   { totalInvested, totalPortfolio, totalGainLoss,
+     totalIncome, totalExpenses, netWorth,
+     savingsRate, overallReturn, catMap }
+════════════════════════════════════════════ */
+
+function exportOverviewCSV() {
+  var s = DB.computeAll();
+  var rows = [
+    { 'Metric':'Net Worth ($)',        'Value': s.netWorth.toFixed(2) },
+    { 'Metric':'Portfolio Value ($)',  'Value': s.totalPortfolio.toFixed(2) },
+    { 'Metric':'Total Invested ($)',   'Value': s.totalInvested.toFixed(2) },
+    { 'Metric':'Total Gain/Loss ($)',  'Value': s.totalGainLoss.toFixed(2) },
+    { 'Metric':'Overall Return (%)',   'Value': (s.overallReturn * 100).toFixed(2) },
+    { 'Metric':'Total Income ($)',     'Value': s.totalIncome.toFixed(2) },
+    { 'Metric':'Total Expenses ($)',   'Value': s.totalExpenses.toFixed(2) },
+    { 'Metric':'Savings Rate (%)',     'Value': (s.savingsRate * 100).toFixed(2) },
+    { 'Metric':'$1M Progress (%)',     'Value': (s.netWorth / 1000000 * 100).toFixed(2) },
+    { 'Metric':'# Investments',        'Value': DB.investments.length },
+    { 'Metric':'# Income Records',     'Value': DB.income.length },
+    { 'Metric':'# Expense Records',    'Value': DB.expenses.length },
+    { 'Metric':'Report Date',          'Value': new Date().toLocaleString() },
+  ];
+  dlCSV(buildCSV(rows), 'Milan_Overview_' + todayStr() + '.csv');
+}
 
 function exportPortfolioCSV() {
-  const s = DB.compute();
-  const rows = DB.investments.map(inv => ({
-    Date: inv.date,
-    Asset: inv.description,
-    Category: inv.category,
-    Type: inv.type,
-    'Invested ($)': inv.amount.toFixed(2),
-    Quantity: inv.qty,
-    'Buy Price ($)': inv.buyPrice.toFixed(inv.buyPrice < 1 ? 6 : 2),
-    'Live Price ($)': (DB.prices[inv.ticker] || inv.mktPrice).toFixed(inv.mktPrice < 1 ? 6 : 2),
-    'Current Value ($)': DB.getInvCurrentValue(inv).toFixed(2),
-    'P&L ($)': DB.getInvPnL(inv).toFixed(2),
-    'Return %': (DB.investments.length && inv.amount > 0 ? (DB.getInvPnL(inv) / inv.amount * 100).toFixed(2) : '0.00') + '%',
-    Ticker: inv.ticker || '',
-    Notes: inv.notes || '',
-  }));
-  // Add summary rows
-  rows.push({});
-  rows.push({ Date: 'SUMMARY', Asset: '', Category: '', Type: '', 'Invested ($)': s.ti.toFixed(2), Quantity: '', 'Buy Price ($)': '', 'Live Price ($)': '', 'Current Value ($)': s.tp.toFixed(2), 'P&L ($)': s.tgl.toFixed(2), 'Return %': (s.or * 100).toFixed(2) + '%', Ticker: '', Notes: '' });
-  exportToCSV(rows, `Milan_Portfolio_${today()}.csv`);
+  var s = DB.computeAll();
+  var rows = [];
+  for (var i = 0; i < DB.investments.length; i++) {
+    var inv = DB.investments[i];
+    var cv  = DB.getInvCurrentValue(inv);
+    var gl  = DB.getInvPnL(inv);
+    var glp = inv.amount > 0 ? (gl / inv.amount * 100).toFixed(2) : '0.00';
+    var lp  = (inv.ticker && DB.prices[inv.ticker]) ? DB.prices[inv.ticker] : inv.mktPrice;
+    rows.push({
+      'Date':               inv.date,
+      'Asset':              inv.description,
+      'Category':           inv.category,
+      'Type':               inv.type,
+      'Invested ($)':       inv.amount.toFixed(2),
+      'Quantity':           inv.qty,
+      'Buy Price ($)':      inv.buyPrice.toFixed(inv.buyPrice < 1 ? 8 : 2),
+      'Live Price ($)':     lp.toFixed(lp < 1 ? 8 : 2),
+      'Current Value ($)':  cv.toFixed(2),
+      'P&L ($)':            gl.toFixed(2),
+      'Return (%)':         glp,
+      'Ticker':             inv.ticker || '',
+      'Notes':              inv.notes  || '',
+    });
+  }
+  // Summary row — same columns
+  rows.push({
+    'Date':'TOTAL', 'Asset': DB.investments.length + ' positions',
+    'Category':'', 'Type':'',
+    'Invested ($)':      s.totalInvested.toFixed(2),
+    'Quantity':          '',
+    'Buy Price ($)':     '',
+    'Live Price ($)':    '',
+    'Current Value ($)': s.totalPortfolio.toFixed(2),
+    'P&L ($)':           s.totalGainLoss.toFixed(2),
+    'Return (%)':        (s.overallReturn * 100).toFixed(2),
+    'Ticker':'', 'Notes':'',
+  });
+  dlCSV(buildCSV(rows), 'Milan_Portfolio_' + todayStr() + '.csv');
 }
 
 function exportIncomeCSV() {
-  const rows = DB.income.map(r => ({
-    Date: r.date,
-    'Amount ($)': r.amount.toFixed(2),
-    Category: r.category,
-    Source: r.source,
-    Method: r.method,
-    Recurring: r.recurring,
-    Notes: r.notes || '',
-  }));
-  const total = DB.income.reduce((s, r) => s + r.amount, 0);
-  rows.push({});
-  rows.push({ Date: 'TOTAL', 'Amount ($)': total.toFixed(2), Category: '', Source: DB.income.length + ' records', Method: '', Recurring: '', Notes: '' });
-  exportToCSV(rows, `Milan_Income_${today()}.csv`);
+  var total = 0;
+  for (var i = 0; i < DB.income.length; i++) total += DB.income[i].amount;
+  var rows = [];
+  for (var i = 0; i < DB.income.length; i++) {
+    var r = DB.income[i];
+    rows.push({
+      'Date':       r.date,
+      'Amount ($)': r.amount.toFixed(2),
+      'Category':   r.category,
+      'Source':     r.source,
+      'Method':     r.method,
+      'Recurring':  r.recurring,
+      'Notes':      r.notes || '',
+    });
+  }
+  rows.push({ 'Date':'TOTAL', 'Amount ($)': total.toFixed(2), 'Category': DB.income.length + ' records', 'Source':'', 'Method':'', 'Recurring':'', 'Notes':'' });
+  dlCSV(buildCSV(rows), 'Milan_Income_' + todayStr() + '.csv');
 }
 
 function exportExpensesCSV() {
-  const rows = DB.expenses.map(r => ({
-    Date: r.date,
-    'Amount ($)': r.amount.toFixed(2),
-    Category: r.category,
-    Description: r.description,
-    Method: r.method,
-    Recurring: r.recurring,
-    Notes: r.notes || '',
-  }));
-  const total = DB.expenses.reduce((s, r) => s + r.amount, 0);
-  rows.push({});
-  rows.push({ Date: 'TOTAL', 'Amount ($)': total.toFixed(2), Category: '', Description: DB.expenses.length + ' records', Method: '', Recurring: '', Notes: '' });
-  exportToCSV(rows, `Milan_Expenses_${today()}.csv`);
+  var total = 0;
+  for (var i = 0; i < DB.expenses.length; i++) total += DB.expenses[i].amount;
+  var rows = [];
+  for (var i = 0; i < DB.expenses.length; i++) {
+    var r = DB.expenses[i];
+    rows.push({
+      'Date':        r.date,
+      'Amount ($)':  r.amount.toFixed(2),
+      'Category':    r.category,
+      'Description': r.description,
+      'Method':      r.method,
+      'Recurring':   r.recurring,
+      'Notes':       r.notes || '',
+    });
+  }
+  rows.push({ 'Date':'TOTAL', 'Amount ($)': total.toFixed(2), 'Category': DB.expenses.length + ' records', 'Description':'', 'Method':'', 'Recurring':'', 'Notes':'' });
+  dlCSV(buildCSV(rows), 'Milan_Expenses_' + todayStr() + '.csv');
 }
 
 function exportNetWorthCSV() {
-  const s = DB.compute();
-  const rows = [];
+  var s = DB.computeAll();
+  // Every row must have EXACTLY: Section, Detail, Amount ($)
+  var rows = [];
+  rows.push({ 'Section':'NET WORTH SUMMARY',  'Detail':'',                                     'Amount ($)':'' });
+  rows.push({ 'Section':'Net Worth',           'Detail':'Assets minus Liabilities',              'Amount ($)': s.netWorth.toFixed(2) });
+  rows.push({ 'Section':'Total Assets',        'Detail':'All investments at current value',      'Amount ($)': s.totalPortfolio.toFixed(2) });
+  rows.push({ 'Section':'Total Liabilities',   'Detail':'All recorded expenses',                 'Amount ($)': s.totalExpenses.toFixed(2) });
+  rows.push({ 'Section':'$1M Progress',        'Detail': (s.netWorth/1000000*100).toFixed(2)+'%','Amount ($)':'' });
+  rows.push({ 'Section':'Portfolio Return',    'Detail': (s.overallReturn*100).toFixed(2)+'%',   'Amount ($)':'' });
+  rows.push({ 'Section':'Savings Rate',        'Detail': (s.savingsRate*100).toFixed(2)+'%',     'Amount ($)':'' });
+  rows.push({ 'Section':'',                    'Detail':'',                                      'Amount ($)':'' });
+  rows.push({ 'Section':'ASSETS BY CATEGORY', 'Detail':'',                                      'Amount ($)':'' });
 
-  rows.push({ Section: 'NET WORTH SUMMARY', Item: '', Value: '' });
-  rows.push({ Section: '', Item: 'Total Assets ($)', Value: s.tp.toFixed(2) });
-  rows.push({ Section: '', Item: 'Total Liabilities ($)', Value: s.te.toFixed(2) });
-  rows.push({ Section: '', Item: 'Net Worth ($)', Value: s.nw.toFixed(2) });
-  rows.push({ Section: '', Item: '$1M Progress', Value: (s.nw / 1e6 * 100).toFixed(2) + '%' });
-  rows.push({ Section: '', Item: 'Portfolio Return', Value: (s.or * 100).toFixed(2) + '%' });
-  rows.push({ Section: '', Item: 'Savings Rate', Value: (s.sr * 100).toFixed(2) + '%' });
-  rows.push({});
-  rows.push({ Section: 'ASSETS BY CATEGORY', Item: '', Value: '' });
+  var cats = Object.keys(s.catMap).sort(function(a,b){ return s.catMap[b].current - s.catMap[a].current; });
+  for (var i = 0; i < cats.length; i++) {
+    var cat = cats[i]; var d = s.catMap[cat];
+    rows.push({
+      'Section':    cat,
+      'Detail':     (d.current / s.totalPortfolio * 100).toFixed(1) + '% of portfolio',
+      'Amount ($)': d.current.toFixed(2),
+    });
+  }
+  rows.push({ 'Section':'TOTAL ASSETS', 'Detail':'100%', 'Amount ($)': s.totalPortfolio.toFixed(2) });
+  rows.push({ 'Section':'', 'Detail':'', 'Amount ($)':'' });
+  rows.push({ 'Section':'LIABILITIES', 'Detail':'', 'Amount ($)':'' });
 
-  Object.entries(s.cm).sort((a, b) => b[1].current - a[1].current).forEach(([cat, d]) => {
-    rows.push({ Section: cat, Item: `${(d.current / s.tp * 100).toFixed(1)}% of portfolio`, Value: '$' + d.current.toFixed(2) });
-  });
+  var expCats = {};
+  for (var i = 0; i < DB.expenses.length; i++) {
+    var r = DB.expenses[i];
+    expCats[r.category] = (expCats[r.category] || 0) + r.amount;
+  }
+  var expKeys = Object.keys(expCats);
+  if (expKeys.length === 0) {
+    rows.push({ 'Section':'No liabilities', 'Detail':'', 'Amount ($)':'0.00' });
+  } else {
+    for (var i = 0; i < expKeys.length; i++) {
+      rows.push({ 'Section': expKeys[i], 'Detail':'', 'Amount ($)': expCats[expKeys[i]].toFixed(2) });
+    }
+  }
+  rows.push({ 'Section':'TOTAL LIABILITIES', 'Detail':'', 'Amount ($)': s.totalExpenses.toFixed(2) });
+  rows.push({ 'Section':'', 'Detail':'', 'Amount ($)':'' });
+  rows.push({ 'Section':'KEY RATIOS', 'Detail':'', 'Amount ($)':'' });
+  rows.push({ 'Section':'Assets / Liabilities', 'Detail': s.totalExpenses > 0 ? (s.totalPortfolio/s.totalExpenses).toFixed(0)+'x' : 'Infinite', 'Amount ($)':'' });
+  rows.push({ 'Section':'NW / $1M Goal',  'Detail': (s.netWorth/1000000).toFixed(4)+'x', 'Amount ($)':'' });
+  rows.push({ 'Section':'Report Date',     'Detail': new Date().toLocaleString(),           'Amount ($)':'' });
 
-  rows.push({});
-  rows.push({ Section: 'LIABILITIES', Item: '', Value: '' });
-  const expCats = {};
-  DB.expenses.forEach(r => { expCats[r.category] = (expCats[r.category] || 0) + r.amount; });
-  Object.entries(expCats).forEach(([cat, amt]) => {
-    rows.push({ Section: cat, Item: '', Value: '$' + amt.toFixed(2) });
-  });
-
-  exportToCSV(rows, `Milan_NetWorth_${today()}.csv`);
+  dlCSV(buildCSV(rows), 'Milan_NetWorth_' + todayStr() + '.csv');
 }
 
-function exportOverviewCSV() {
-  const s = DB.compute();
-  const rows = [
-    { Metric: 'Net Worth ($)', Value: s.nw.toFixed(2) },
-    { Metric: 'Total Portfolio Value ($)', Value: s.tp.toFixed(2) },
-    { Metric: 'Total Invested ($)', Value: s.ti.toFixed(2) },
-    { Metric: 'Total Gain/Loss ($)', Value: s.tgl.toFixed(2) },
-    { Metric: 'Overall Return %', Value: (s.or * 100).toFixed(2) + '%' },
-    { Metric: 'Total Income ($)', Value: s.tin.toFixed(2) },
-    { Metric: 'Total Expenses ($)', Value: s.te.toFixed(2) },
-    { Metric: 'Savings Rate %', Value: (s.sr * 100).toFixed(2) + '%' },
-    { Metric: '$1M Progress %', Value: (s.nw / 1e6 * 100).toFixed(2) + '%' },
-    { Metric: '# Investments', Value: DB.investments.length },
-    { Metric: '# Income Records', Value: DB.income.length },
-    { Metric: '# Expense Records', Value: DB.expenses.length },
-    { Metric: 'Report Generated', Value: new Date().toLocaleString() },
-  ];
-  exportToCSV(rows, `Milan_Overview_${today()}.csv`);
-}
-
-// ─────────────────────────────────────────────
-// EXPORT TO PDF (using browser print)
-// ─────────────────────────────────────────────
+/* ════════════════════════════════════════════
+   PDF EXPORT — blob URL iframe
+════════════════════════════════════════════ */
 
 function exportPDF(section) {
-  const s = DB.compute();
-  const now = new Date().toLocaleString();
+  var s  = DB.computeAll();
+  var now = new Date().toLocaleString();
 
-  let content = '';
+  var css = '*{box-sizing:border-box;margin:0;padding:0}'
+    + 'body{font-family:Arial,sans-serif;font-size:10px;color:#111;padding:20px}'
+    + '.hdr{border-bottom:3px solid #ff6600;padding-bottom:10px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-end}'
+    + '.ht{font-size:17px;font-weight:700;color:#ff6600;letter-spacing:.06em}'
+    + '.hs{font-size:9px;color:#888;margin-top:2px}'
+    + '.hm{text-align:right;font-size:9px;color:#888;line-height:1.6}'
+    + 'h2{font-size:10px;font-weight:700;letter-spacing:.12em;color:#ff6600;margin:16px 0 6px;border-bottom:1px solid #ddd;padding-bottom:3px;text-transform:uppercase}'
+    + 'table{width:100%;border-collapse:collapse;margin-bottom:12px;page-break-inside:avoid}'
+    + 'th{background:#1a1a1a;color:#fff;padding:5px 7px;text-align:left;font-size:8px;letter-spacing:.06em;white-space:nowrap}'
+    + 'td{padding:4px 7px;border-bottom:1px solid #eee;font-size:9px;vertical-align:top}'
+    + 'tr:nth-child(even) td{background:#fafafa}'
+    + '.tot td{font-weight:700;background:#efefef;border-top:2px solid #ccc}'
+    + '.pos{color:green}.neg{color:red}.mu{color:#888}'
+    + '@page{margin:12mm}';
 
+  var titles = { overview:'Overview', portfolio:'Portfolio', income:'Income', expenses:'Expenses', networth:'Net Worth', all:'Complete Financial Statement' };
+
+  var body = '<div class="hdr"><div>'
+    + '<div class="ht">MILAN PATEL &mdash; FINANCIAL REPORT</div>'
+    + '<div class="hs">' + (titles[section]||section) + '</div></div>'
+    + '<div class="hm">Generated: ' + now + '<br>Net Worth: $' + xfmt(s.netWorth)
+    + '<br>$1M Progress: ' + (s.netWorth/1000000*100).toFixed(1) + '%</div></div>';
+
+  /* OVERVIEW */
   if (section === 'overview' || section === 'all') {
-    content += `
-      <h2>MARKET OVERVIEW</h2>
-      <table>
-        <tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>Net Worth</td><td>$${fmt(s.nw)}</td></tr>
-        <tr><td>Portfolio Value</td><td>$${fmt(s.tp)}</td></tr>
-        <tr><td>Total Invested</td><td>$${fmt(s.ti)}</td></tr>
-        <tr><td>Total Gain/Loss</td><td>${s.tgl >= 0 ? '+' : ''}$${fmt(Math.abs(s.tgl))}</td></tr>
-        <tr><td>Overall Return</td><td>${(s.or * 100).toFixed(2)}%</td></tr>
-        <tr><td>Total Income</td><td>$${fmt(s.tin)}</td></tr>
-        <tr><td>Total Expenses</td><td>$${fmt(s.te)}</td></tr>
-        <tr><td>Savings Rate</td><td>${(s.sr * 100).toFixed(2)}%</td></tr>
-        <tr><td>$1M Progress</td><td>${(s.nw / 1e6 * 100).toFixed(2)}%</td></tr>
-      </table>`;
+    body += '<h2>Market Overview</h2><table>'
+      + '<tr><th>Metric</th><th>Value</th><th>Metric</th><th>Value</th></tr>'
+      + '<tr><td>Net Worth</td><td class="' + (s.netWorth>=0?'pos':'neg') + '">$' + xfmt(s.netWorth) + '</td><td>Total Income</td><td class="pos">$' + xfmt(s.totalIncome) + '</td></tr>'
+      + '<tr><td>Portfolio Value</td><td class="pos">$' + xfmt(s.totalPortfolio) + '</td><td>Total Expenses</td><td class="neg">$' + xfmt(s.totalExpenses) + '</td></tr>'
+      + '<tr><td>Total Invested</td><td>$' + xfmt(s.totalInvested) + '</td><td>Savings Rate</td><td>' + (s.savingsRate*100).toFixed(2) + '%</td></tr>'
+      + '<tr><td>Total Gain/Loss</td><td class="' + (s.totalGainLoss>=0?'pos':'neg') + '">' + (s.totalGainLoss>=0?'+':'-') + '$' + xfmt(Math.abs(s.totalGainLoss)) + '</td><td>$1M Progress</td><td class="pos">' + (s.netWorth/1000000*100).toFixed(2) + '%</td></tr>'
+      + '<tr><td>Overall Return</td><td class="' + (s.overallReturn>=0?'pos':'neg') + '">' + (s.overallReturn*100).toFixed(2) + '%</td><td># Positions</td><td>' + DB.investments.length + '</td></tr>'
+      + '</table>';
   }
 
+  /* PORTFOLIO */
   if (section === 'portfolio' || section === 'all') {
-    content += `
-      <h2>INVESTMENT PORTFOLIO</h2>
-      <table>
-        <tr><th>Date</th><th>Asset</th><th>Category</th><th>Invested</th><th>Qty</th><th>Current Value</th><th>P&L</th><th>Return %</th><th>Ticker</th></tr>
-        ${DB.investments.map(inv => {
-          const cv = DB.getInvCurrentValue(inv);
-          const gl = DB.getInvPnL(inv);
-          const glp = inv.amount > 0 ? gl / inv.amount * 100 : 0;
-          return `<tr>
-            <td>${inv.date}</td><td>${inv.description}</td><td>${inv.category}</td>
-            <td>$${fmt(inv.amount)}</td><td>${inv.qty.toFixed(inv.qty < 1 ? 6 : 2)}</td>
-            <td>$${fmt(cv)}</td>
-            <td style="color:${gl >= 0 ? 'green' : 'red'}">${gl >= 0 ? '+' : ''}$${fmt(Math.abs(gl))}</td>
-            <td style="color:${glp >= 0 ? 'green' : 'red'}">${glp.toFixed(2)}%</td>
-            <td>${inv.ticker || '—'}</td>
-          </tr>`;
-        }).join('')}
-        <tr style="font-weight:bold;background:#f5f5f5">
-          <td colspan="3">TOTAL</td><td>$${fmt(s.ti)}</td><td></td><td>$${fmt(s.tp)}</td>
-          <td>${s.tgl >= 0 ? '+' : ''}$${fmt(Math.abs(s.tgl))}</td><td>${(s.or * 100).toFixed(2)}%</td><td></td>
-        </tr>
-      </table>`;
+    body += '<h2>Investment Portfolio</h2><table>'
+      + '<tr><th>Date</th><th>Asset</th><th>Category</th><th>Invested</th><th>Qty</th><th>Live Price</th><th>Curr Value</th><th>P&amp;L</th><th>Return</th><th>Ticker</th></tr>';
+    for (var i = 0; i < DB.investments.length; i++) {
+      var inv = DB.investments[i];
+      var cv  = DB.getInvCurrentValue(inv);
+      var gl  = DB.getInvPnL(inv);
+      var glp = inv.amount > 0 ? (gl/inv.amount*100).toFixed(2) : '0.00';
+      var lp  = (inv.ticker && DB.prices[inv.ticker]) ? DB.prices[inv.ticker] : inv.mktPrice;
+      var qd  = inv.qty < 0.001 ? inv.qty.toFixed(8) : inv.qty < 1 ? inv.qty.toFixed(6) : inv.qty.toFixed(2);
+      var lpd = lp < 0.001 ? lp.toFixed(8) : lp < 1 ? lp.toFixed(6) : xfmt(lp);
+      body += '<tr>'
+        + '<td>' + inv.date + '</td><td>' + inv.description + '</td><td>' + inv.category + '</td>'
+        + '<td>$' + xfmt(inv.amount) + '</td><td>' + qd + '</td><td>$' + lpd + '</td>'
+        + '<td class="pos">$' + xfmt(cv) + '</td>'
+        + '<td class="' + (gl>=0?'pos':'neg') + '">' + (gl>=0?'+':'-') + '$' + xfmt(Math.abs(gl)) + '</td>'
+        + '<td class="' + (gl>=0?'pos':'neg') + '">' + glp + '%</td>'
+        + '<td>' + (inv.ticker||'—') + '</td></tr>';
+    }
+    body += '<tr class="tot"><td colspan="3">TOTAL</td><td>$' + xfmt(s.totalInvested) + '</td><td></td><td></td>'
+      + '<td>$' + xfmt(s.totalPortfolio) + '</td>'
+      + '<td class="' + (s.totalGainLoss>=0?'pos':'neg') + '">' + (s.totalGainLoss>=0?'+':'-') + '$' + xfmt(Math.abs(s.totalGainLoss)) + '</td>'
+      + '<td class="' + (s.overallReturn>=0?'pos':'neg') + '">' + (s.overallReturn*100).toFixed(2) + '%</td><td></td></tr></table>';
   }
 
+  /* INCOME */
   if (section === 'income' || section === 'all') {
-    const total = DB.income.reduce((a, r) => a + r.amount, 0);
-    content += `
-      <h2>INCOME RECORDS</h2>
-      <table>
-        <tr><th>Date</th><th>Amount</th><th>Category</th><th>Source</th><th>Method</th><th>Recurring</th></tr>
-        ${DB.income.map(r => `<tr><td>${r.date}</td><td style="color:green">+$${fmt(r.amount)}</td><td>${r.category}</td><td>${r.source}</td><td>${r.method}</td><td>${r.recurring}</td></tr>`).join('')}
-        <tr style="font-weight:bold;background:#f5f5f5"><td colspan="1">TOTAL</td><td style="color:green">$${fmt(total)}</td><td colspan="4">${DB.income.length} records</td></tr>
-      </table>`;
+    var incTotal = 0;
+    for (var i = 0; i < DB.income.length; i++) incTotal += DB.income[i].amount;
+    body += '<h2>Income Records</h2><table>'
+      + '<tr><th>Date</th><th>Amount</th><th>Category</th><th>Source</th><th>Method</th><th>Recurring</th></tr>';
+    var incSorted = DB.income.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+    for (var i = 0; i < incSorted.length; i++) {
+      var r = incSorted[i];
+      body += '<tr><td>' + r.date + '</td><td class="pos">+$' + xfmt(r.amount) + '</td><td>' + r.category + '</td><td>' + r.source + '</td><td>' + r.method + '</td><td>' + r.recurring + '</td></tr>';
+    }
+    body += '<tr class="tot"><td>TOTAL</td><td class="pos">$' + xfmt(incTotal) + '</td><td colspan="4">' + DB.income.length + ' records</td></tr></table>';
   }
 
+  /* EXPENSES */
   if (section === 'expenses' || section === 'all') {
-    const total = DB.expenses.reduce((a, r) => a + r.amount, 0);
-    content += `
-      <h2>EXPENSE RECORDS</h2>
-      <table>
-        <tr><th>Date</th><th>Amount</th><th>Category</th><th>Description</th><th>Method</th><th>Recurring</th></tr>
-        ${DB.expenses.map(r => `<tr><td>${r.date}</td><td style="color:red">-$${fmt(r.amount)}</td><td>${r.category}</td><td>${r.description}</td><td>${r.method}</td><td>${r.recurring}</td></tr>`).join('')}
-        <tr style="font-weight:bold;background:#f5f5f5"><td>TOTAL</td><td style="color:red">$${fmt(total)}</td><td colspan="4">${DB.expenses.length} records</td></tr>
-      </table>`;
+    var expTotal = 0;
+    for (var i = 0; i < DB.expenses.length; i++) expTotal += DB.expenses[i].amount;
+    body += '<h2>Expense Records</h2><table>'
+      + '<tr><th>Date</th><th>Amount</th><th>Category</th><th>Description</th><th>Method</th><th>Recurring</th></tr>';
+    var expSorted = DB.expenses.slice().sort(function(a,b){ return new Date(b.date)-new Date(a.date); });
+    for (var i = 0; i < expSorted.length; i++) {
+      var r = expSorted[i];
+      body += '<tr><td>' + r.date + '</td><td class="neg">-$' + xfmt(r.amount) + '</td><td>' + r.category + '</td><td>' + r.description + '</td><td>' + r.method + '</td><td>' + r.recurring + '</td></tr>';
+    }
+    body += '<tr class="tot"><td>TOTAL</td><td class="neg">$' + xfmt(expTotal) + '</td><td colspan="4">' + DB.expenses.length + ' records</td></tr></table>';
   }
 
+  /* NET WORTH */
   if (section === 'networth' || section === 'all') {
-    content += `
-      <h2>NET WORTH STATEMENT</h2>
-      <table>
-        <tr><th>Category</th><th>Value ($)</th><th>% of Assets</th></tr>
-        ${Object.entries(s.cm).sort((a, b) => b[1].current - a[1].current).map(([cat, d]) =>
-          `<tr><td>${cat}</td><td>$${fmt(d.current)}</td><td>${(d.current / s.tp * 100).toFixed(2)}%</td></tr>`
-        ).join('')}
-        <tr style="font-weight:bold;background:#f5f5f5"><td>TOTAL ASSETS</td><td>$${fmt(s.tp)}</td><td>100%</td></tr>
-      </table>
-      <br>
-      <table>
-        <tr><th>Ratio</th><th>Value</th></tr>
-        <tr><td>Net Worth</td><td>$${fmt(s.nw)}</td></tr>
-        <tr><td>Assets / Liabilities</td><td>${s.te > 0 ? (s.tp / s.te).toFixed(0) + '×' : '∞'}</td></tr>
-        <tr><td>$1M Progress</td><td>${(s.nw / 1e6 * 100).toFixed(2)}%</td></tr>
-        <tr><td>Portfolio Return</td><td>${(s.or * 100).toFixed(2)}%</td></tr>
-      </table>`;
+    var cats = Object.keys(s.catMap).sort(function(a,b){ return s.catMap[b].current - s.catMap[a].current; });
+    body += '<h2>Net Worth Statement</h2><table>'
+      + '<tr><th>Asset Category</th><th>Current Value</th><th>% of Assets</th><th>Risk</th></tr>';
+    for (var i = 0; i < cats.length; i++) {
+      var cat = cats[i]; var d = s.catMap[cat];
+      body += '<tr><td>' + cat + '</td><td class="pos">$' + xfmt(d.current) + '</td>'
+        + '<td>' + (d.current/s.totalPortfolio*100).toFixed(2) + '%</td>'
+        + '<td>' + (XRISK[cat]||'Medium') + '</td></tr>';
+    }
+    body += '<tr class="tot"><td>TOTAL ASSETS</td><td class="pos">$' + xfmt(s.totalPortfolio) + '</td><td>100%</td><td></td></tr></table>';
+    body += '<table>'
+      + '<tr><th>Ratio</th><th>Value</th><th>Ratio</th><th>Value</th></tr>'
+      + '<tr><td>Net Worth</td><td class="' + (s.netWorth>=0?'pos':'neg') + '">$' + xfmt(s.netWorth) + '</td><td>Assets / Liabilities</td><td>' + (s.totalExpenses>0?(s.totalPortfolio/s.totalExpenses).toFixed(0)+'x':'Infinite') + '</td></tr>'
+      + '<tr><td>$1M Progress</td><td class="pos">' + (s.netWorth/1000000*100).toFixed(2) + '%</td><td>Portfolio Return</td><td class="' + (s.overallReturn>=0?'pos':'neg') + '">' + (s.overallReturn*100).toFixed(2) + '%</td></tr>'
+      + '<tr><td>Savings Rate</td><td>' + (s.savingsRate*100).toFixed(2) + '%</td><td>Total Liabilities</td><td class="neg">$' + xfmt(s.totalExpenses) + '</td></tr>'
+      + '</table>';
   }
 
-  const win = window.open('', '_blank');
-  win.document.write(`<!DOCTYPE html>
-<html>
-<head>
-  <title>Milan Patel — Financial Report</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Arial', sans-serif; font-size: 11px; color: #111; padding: 24px; }
-    .report-header { border-bottom: 3px solid #ff6600; padding-bottom: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
-    .report-title { font-size: 20px; font-weight: 700; color: #ff6600; letter-spacing: 0.1em; }
-    .report-sub { font-size: 11px; color: #888; margin-top: 2px; }
-    .report-meta { text-align: right; font-size: 10px; color: #888; }
-    h2 { font-size: 12px; font-weight: 700; letter-spacing: 0.15em; color: #ff6600; margin: 20px 0 8px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-    th { background: #1a1a1a; color: #fff; padding: 6px 8px; text-align: left; font-size: 9px; letter-spacing: 0.1em; }
-    td { padding: 5px 8px; border-bottom: 1px solid #eee; font-size: 10px; }
-    tr:nth-child(even) td { background: #fafafa; }
-    @media print { body { padding: 12px; } }
-  </style>
-</head>
-<body>
-  <div class="report-header">
-    <div>
-      <div class="report-title">MILAN PATEL — FINANCIAL REPORT</div>
-      <div class="report-sub">${section === 'all' ? 'Complete Financial Statement' : section.charAt(0).toUpperCase() + section.slice(1) + ' Report'}</div>
-    </div>
-    <div class="report-meta">Generated: ${now}<br>Net Worth: $${fmt(s.nw)}</div>
-  </div>
-  ${content}
-</body>
-</html>`);
-  win.document.close();
-  setTimeout(() => win.print(), 500);
-  showToast('✓ PDF ready — use Print → Save as PDF', 'green');
+  var fullHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Milan Patel Financial Report</title><style>' + css + '</style></head><body>' + body + '</body></html>';
+
+  // Blob URL iframe — works on all browsers, no popup blocker
+  var blob = new Blob([fullHtml], { type:'text/html;charset=utf-8;' });
+  var blobUrl = URL.createObjectURL(blob);
+  var old = document.getElementById('_pdf_f');
+  if (old) old.remove();
+  var fr = document.createElement('iframe');
+  fr.id = '_pdf_f';
+  fr.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;border:none';
+  document.body.appendChild(fr);
+  fr.onload = function() {
+    try {
+      fr.contentWindow.focus();
+      fr.contentWindow.print();
+      showToast('Print dialog open — select Save as PDF', 'green');
+    } catch(e) {
+      window.open(blobUrl, '_blank');
+      showToast('Opened in new tab — press Ctrl+P to save PDF', 'gold');
+    }
+    setTimeout(function(){ URL.revokeObjectURL(blobUrl); }, 60000);
+  };
+  fr.src = blobUrl;
 }
 
-// ─────────────────────────────────────────────
-// DOWNLOAD MODAL
-// ─────────────────────────────────────────────
+/* ════════════════════════════════════════════
+   DOWNLOAD MODAL
+════════════════════════════════════════════ */
 
 function openDownloadModal() {
-  document.getElementById('modal-title').textContent = '⬇ EXPORT / DOWNLOAD';
-  document.getElementById('modal-body').innerHTML = `
-    <div style="margin-bottom:16px">
-      <div class="wiz-title">Choose format & section</div>
-
-      <div class="dl-section-title">EXCEL (CSV) — Opens in Excel, Google Sheets</div>
-      <div class="dl-grid">
-        <button class="dl-btn" onclick="exportOverviewCSV()">
-          <span class="dl-icon">📊</span>
-          <span class="dl-lbl">Overview</span>
-          <span class="dl-fmt">.CSV</span>
-        </button>
-        <button class="dl-btn" onclick="exportPortfolioCSV()">
-          <span class="dl-icon">📈</span>
-          <span class="dl-lbl">Portfolio</span>
-          <span class="dl-fmt">.CSV</span>
-        </button>
-        <button class="dl-btn" onclick="exportIncomeCSV()">
-          <span class="dl-icon">💵</span>
-          <span class="dl-lbl">Income</span>
-          <span class="dl-fmt">.CSV</span>
-        </button>
-        <button class="dl-btn" onclick="exportExpensesCSV()">
-          <span class="dl-icon">💸</span>
-          <span class="dl-lbl">Expenses</span>
-          <span class="dl-fmt">.CSV</span>
-        </button>
-        <button class="dl-btn" onclick="exportNetWorthCSV()">
-          <span class="dl-icon">💰</span>
-          <span class="dl-lbl">Net Worth</span>
-          <span class="dl-fmt">.CSV</span>
-        </button>
-      </div>
-
-      <div class="dl-section-title" style="margin-top:20px">PDF REPORT — Print or Save as PDF</div>
-      <div class="dl-grid">
-        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('overview')">
-          <span class="dl-icon">📋</span>
-          <span class="dl-lbl">Overview</span>
-          <span class="dl-fmt">PDF</span>
-        </button>
-        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('portfolio')">
-          <span class="dl-icon">📈</span>
-          <span class="dl-lbl">Portfolio</span>
-          <span class="dl-fmt">PDF</span>
-        </button>
-        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('income')">
-          <span class="dl-icon">💵</span>
-          <span class="dl-lbl">Income</span>
-          <span class="dl-fmt">PDF</span>
-        </button>
-        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('expenses')">
-          <span class="dl-icon">💸</span>
-          <span class="dl-lbl">Expenses</span>
-          <span class="dl-fmt">PDF</span>
-        </button>
-        <button class="dl-btn dl-btn-pdf" onclick="exportPDF('networth')">
-          <span class="dl-icon">💰</span>
-          <span class="dl-lbl">Net Worth</span>
-          <span class="dl-fmt">PDF</span>
-        </button>
-        <button class="dl-btn dl-btn-pdf" style="border-color:var(--orange);color:var(--orange)" onclick="exportPDF('all')">
-          <span class="dl-icon">📑</span>
-          <span class="dl-lbl">Full Report</span>
-          <span class="dl-fmt">PDF</span>
-        </button>
-      </div>
-
-      <div class="dl-section-title" style="margin-top:20px">UPLOAD — Import Data</div>
-      <div class="upload-zone" id="upload-zone" ondrop="handleDrop(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)">
-        <div class="uz-icon">📁</div>
-        <div class="uz-title">Drop files here or click to browse</div>
-        <div class="uz-sub">Supports: Excel (.xlsx, .xls), CSV (.csv), Invoice PDF (.pdf), Images (.jpg, .png)</div>
-        <input type="file" id="file-upload-input" multiple accept=".xlsx,.xls,.csv,.pdf,.jpg,.jpeg,.png" onchange="handleFileUpload(this.files)" style="display:none" />
-        <button class="btn-primary" style="margin-top:12px" onclick="document.getElementById('file-upload-input').click()">Browse Files</button>
-      </div>
-
-      <div id="uploaded-files-list"></div>
-    </div>
-
-    <div class="form-actions">
-      <button class="btn-ghost" onclick="closeModal()">Close</button>
-    </div>
-  `;
+  document.getElementById('modal-title').textContent = 'EXPORT & UPLOAD';
+  document.getElementById('modal-body').innerHTML = ''
+    + '<div class="dl-section-title">EXCEL / CSV &mdash; Opens in Excel or Google Sheets</div>'
+    + '<div class="dl-grid">'
+    + btn('📊','Overview','.CSV','exportOverviewCSV()',false)
+    + btn('📈','Portfolio','.CSV','exportPortfolioCSV()',false)
+    + btn('💵','Income','.CSV','exportIncomeCSV()',false)
+    + btn('💸','Expenses','.CSV','exportExpensesCSV()',false)
+    + btn('💰','Net Worth','.CSV','exportNetWorthCSV()',false)
+    + '</div>'
+    + '<div class="dl-section-title" style="margin-top:20px">PDF REPORT &mdash; Print dialog opens, choose Save as PDF</div>'
+    + '<div class="dl-grid">'
+    + btn('📋','Overview','PDF','exportPDF(\'overview\')',true)
+    + btn('📈','Portfolio','PDF','exportPDF(\'portfolio\')',true)
+    + btn('💵','Income','PDF','exportPDF(\'income\')',true)
+    + btn('💸','Expenses','PDF','exportPDF(\'expenses\')',true)
+    + btn('💰','Net Worth','PDF','exportPDF(\'networth\')',true)
+    + '<button class="dl-btn dl-btn-pdf" style="border-color:var(--orange);color:var(--orange)" onclick="exportPDF(\'all\')">'
+    + '<span class="dl-icon">📑</span><span class="dl-lbl">Full Report</span><span class="dl-fmt">PDF</span></button>'
+    + '</div>'
+    + '<div class="dl-section-title" style="margin-top:20px">UPLOAD FILES &mdash; Invoices, CSV, Images</div>'
+    + '<div class="upload-zone" id="upload-zone" ondrop="handleDrop(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" onclick="document.getElementById(\'fui\').click()">'
+    + '<div class="uz-icon">&#x1F4C1;</div>'
+    + '<div class="uz-title">Drop files here or click to browse</div>'
+    + '<div class="uz-sub">CSV, PDF invoices, Images (.jpg .png), Excel (.xlsx)</div>'
+    + '<input type="file" id="fui" multiple accept=".xlsx,.xls,.csv,.pdf,.jpg,.jpeg,.png" onchange="handleFileUpload(this.files)" style="display:none" />'
+    + '</div>'
+    + '<div id="ufl"></div>'
+    + '<div class="form-actions" style="margin-top:14px"><button class="btn-ghost" onclick="closeModal()">Close</button></div>';
   document.getElementById('modal-overlay').classList.add('open');
+  renderUploaded();
 }
 
-// ─────────────────────────────────────────────
-// FILE UPLOAD HANDLING
-// ─────────────────────────────────────────────
-
-const UPLOADED_FILES = [];
-
-function handleDragOver(e) {
-  e.preventDefault();
-  document.getElementById('upload-zone').classList.add('drag-over');
+function btn(icon, lbl, fmt, fn, isPdf) {
+  return '<button class="dl-btn' + (isPdf?' dl-btn-pdf':'') + '" onclick="' + fn + '">'
+    + '<span class="dl-icon">' + icon + '</span>'
+    + '<span class="dl-lbl">' + lbl + '</span>'
+    + '<span class="dl-fmt">' + fmt + '</span></button>';
 }
 
-function handleDragLeave(e) {
-  document.getElementById('upload-zone').classList.remove('drag-over');
-}
+/* ════════════════════════════════════════════
+   FILE UPLOAD
+════════════════════════════════════════════ */
 
-function handleDrop(e) {
-  e.preventDefault();
-  document.getElementById('upload-zone').classList.remove('drag-over');
+var UF = [];
+
+function handleDragOver(e){ e.preventDefault(); e.stopPropagation(); var z=document.getElementById('upload-zone'); if(z)z.classList.add('drag-over'); }
+function handleDragLeave(){ var z=document.getElementById('upload-zone'); if(z)z.classList.remove('drag-over'); }
+function handleDrop(e){
+  e.preventDefault(); e.stopPropagation();
+  var z=document.getElementById('upload-zone'); if(z)z.classList.remove('drag-over');
   handleFileUpload(e.dataTransfer.files);
 }
 
 function handleFileUpload(files) {
-  if (!files || !files.length) return;
-
-  Array.from(files).forEach(file => {
-    const id = Date.now() + Math.random();
-    const entry = {
-      id,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      date: new Date().toLocaleDateString(),
-      file,
-    };
-    UPLOADED_FILES.unshift(entry);
-
-    // If CSV — offer to import data
-    if (file.name.endsWith('.csv')) {
-      parseCSVFile(file, entry);
-    }
+  if (!files||!files.length) return;
+  Array.from(files).forEach(function(f){
+    var id = Date.now()+Math.random();
+    var e = { id:id, name:f.name, size:f.size, date:new Date().toLocaleDateString(), file:f, canImport:false, csvRows:0 };
+    UF.unshift(e);
+    if (f.name.toLowerCase().endsWith('.csv')) scanCSV(f, e);
   });
-
-  renderUploadedFiles();
-  showToast(`✓ ${files.length} file(s) uploaded successfully`, 'green');
+  renderUploaded();
+  showToast(files.length + ' file(s) uploaded', 'green');
 }
 
-function parseCSVFile(file, entry) {
-  const reader = new FileReader();
-  reader.onload = e => {
-    const text = e.target.result;
-    const lines = text.trim().split('\n');
+function scanCSV(file, entry) {
+  var r = new FileReader();
+  r.onload = function(e){
+    var lines = e.target.result.trim().split('\n');
     if (lines.length < 2) return;
-    const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
-    entry.csvHeaders = headers;
-    entry.csvRows = lines.length - 1;
-    entry.canImport = headers.includes('amount') || headers.includes('amount ($)');
-    renderUploadedFiles();
+    var hdrs = lines[0].split(',').map(function(h){return h.replace(/"/g,'').trim().toLowerCase();});
+    entry.csvRows = lines.length-1;
+    entry.canImport = hdrs.indexOf('amount ($)')>-1 || hdrs.indexOf('amount')>-1;
+    renderUploaded();
   };
-  reader.readAsText(file);
+  r.readAsText(file);
 }
 
-function renderUploadedFiles() {
-  const el = document.getElementById('uploaded-files-list');
-  if (!el || !UPLOADED_FILES.length) return;
-
-  el.innerHTML = `
-    <div class="dl-section-title" style="margin-top:16px">UPLOADED FILES (${UPLOADED_FILES.length})</div>
-    ${UPLOADED_FILES.map(f => {
-      const icon = f.name.endsWith('.pdf') ? '📄' : f.name.endsWith('.csv') || f.name.endsWith('.xlsx') || f.name.endsWith('.xls') ? '📊' : '🖼️';
-      const size = f.size > 1024*1024 ? (f.size/1024/1024).toFixed(1)+' MB' : (f.size/1024).toFixed(0)+' KB';
-      return `
-        <div class="uploaded-file-row">
-          <span class="uf-icon">${icon}</span>
-          <div class="uf-info">
-            <div class="uf-name">${f.name}</div>
-            <div class="uf-meta">${size} · Uploaded ${f.date}${f.csvRows ? ` · ${f.csvRows} rows` : ''}</div>
-          </div>
-          <div class="uf-actions">
-            ${f.canImport ? `<button class="btn-primary" style="font-size:.6rem;padding:4px 10px" onclick="importCSVData(${f.id})">IMPORT DATA</button>` : ''}
-            <button class="btn-ghost" style="font-size:.6rem;padding:4px 10px" onclick="downloadUploadedFile(${f.id})">DOWNLOAD</button>
-            <button class="del-btn" onclick="removeUploadedFile(${f.id})">✕</button>
-          </div>
-        </div>`;
-    }).join('')}
-  `;
+function renderUploaded() {
+  var el = document.getElementById('ufl');
+  if (!el||!UF.length){if(el)el.innerHTML='';return;}
+  var h = '<div class="dl-section-title" style="margin-top:14px">STORED FILES (' + UF.length + ')</div>';
+  UF.forEach(function(f){
+    var icon = f.name.match(/\.pdf$/i)?'📄':f.name.match(/\.(csv|xlsx|xls)$/i)?'📊':'🖼️';
+    var sz = f.size>1048576?(f.size/1048576).toFixed(1)+' MB':Math.round(f.size/1024)+' KB';
+    h += '<div class="uploaded-file-row">'
+      + '<span class="uf-icon">'+icon+'</span>'
+      + '<div class="uf-info"><div class="uf-name">'+f.name+'</div>'
+      + '<div class="uf-meta">'+sz+' &middot; '+f.date+(f.csvRows?' &middot; '+f.csvRows+' rows':'')+'</div></div>'
+      + '<div class="uf-actions">'
+      + (f.canImport?'<button class="btn-primary" style="font-size:.58rem;padding:4px 9px" onclick="importCSV('+f.id+')">IMPORT</button>':'')
+      + '<button class="btn-ghost" style="font-size:.58rem;padding:4px 9px" onclick="reDl('+f.id+')">SAVE</button>'
+      + '<button class="del-btn" onclick="rmFile('+f.id+')">&#x2715;</button>'
+      + '</div></div>';
+  });
+  el.innerHTML = h;
 }
 
-function downloadUploadedFile(id) {
-  const entry = UPLOADED_FILES.find(f => f.id === id);
-  if (!entry) return;
-  const url = URL.createObjectURL(entry.file);
-  const a = document.createElement('a');
-  a.href = url; a.download = entry.name;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+function reDl(id){
+  var f=UF.find(function(x){return x.id===id;});
+  if(!f)return;
+  var url=URL.createObjectURL(f.file);
+  var a=document.createElement('a');a.href=url;a.download=f.name;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);},1000);
 }
 
-function removeUploadedFile(id) {
-  const i = UPLOADED_FILES.findIndex(f => f.id === id);
-  if (i !== -1) UPLOADED_FILES.splice(i, 1);
-  renderUploadedFiles();
+function rmFile(id){
+  var i=UF.findIndex(function(x){return x.id===id;});
+  if(i>-1)UF.splice(i,1);
+  renderUploaded();
 }
 
-function importCSVData(id) {
-  const entry = UPLOADED_FILES.find(f => f.id === id);
-  if (!entry || !entry.file) return;
+/* ════════════════════════════════════════════
+   CSV IMPORT
+════════════════════════════════════════════ */
 
-  const reader = new FileReader();
-  reader.onload = e => {
-    const text = e.target.result;
-    const lines = text.trim().split('\n');
-    const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
-
-    let imported = 0;
-
-    lines.slice(1).forEach(line => {
-      if (!line.trim()) return;
-      const vals = parseCSVLine(line);
-      const row = {};
-      headers.forEach((h, i) => row[h] = vals[i]?.replace(/"/g,'').trim() || '');
-
-      const amount = parseFloat(row['amount ($)'] || row['amount'] || 0);
-      const date = row['date'] || new Date().toISOString().slice(0,10);
-      if (!amount || isNaN(amount) || amount <= 0) return;
-
-      // Detect type from headers
-      if (headers.includes('invested ($)') || headers.includes('ticker') || headers.includes('qty') || headers.includes('quantity')) {
-        // Investment row
-        DB.investments.push({
-          id: DB.nextId(), date,
-          amount: parseFloat(row['invested ($)'] || row['amount ($)'] || amount),
-          category: row['category'] || 'Other',
-          description: row['asset'] || row['description'] || 'Imported',
-          type: row['type'] || 'Other',
-          qty: parseFloat(row['qty'] || row['quantity'] || 1),
-          buyPrice: parseFloat(row['buy price ($)'] || amount),
-          mktPrice: parseFloat(row['live price ($)'] || row['buy price ($)'] || amount),
-          ticker: row['ticker'] || '',
-          notes: row['notes'] || 'Imported from CSV',
-        });
+function importCSV(id){
+  var entry=UF.find(function(f){return f.id===id;});
+  if(!entry||!entry.file)return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var text=e.target.result.replace(/^\uFEFF/,'');
+    var lines=text.trim().split('\n');
+    if(lines.length<2){showToast('File empty or invalid','red');return;}
+    var hdrs=lines[0].split(',').map(function(h){return h.replace(/"/g,'').trim().toLowerCase();});
+    var imported=0;
+    for(var i=1;i<lines.length;i++){
+      if(!lines[i].trim())continue;
+      var vals=splitLine(lines[i]);
+      var row={};
+      hdrs.forEach(function(h,j){row[h]=(vals[j]||'').replace(/^"|"$/g,'').trim();});
+      var rawAmt=row['amount ($)']||row['invested ($)']||row['amount']||'';
+      var amount=parseFloat(rawAmt);
+      if(!amount||isNaN(amount)||amount<=0)continue;
+      if(row['date']==='TOTAL'||row['section']==='NET WORTH SUMMARY'||!row['date'])continue;
+      var date=row['date']||new Date().toISOString().slice(0,10);
+      var hasInv=hdrs.indexOf('ticker')>-1||hdrs.indexOf('qty')>-1||hdrs.indexOf('invested ($)')>-1;
+      var hasSrc=hdrs.indexOf('source')>-1;
+      var hasDesc=hdrs.indexOf('description')>-1;
+      if(hasInv){
+        DB.investments.push({id:DB.nextId(),date:date,amount:amount,category:row['category']||'Other',description:row['asset']||row['description']||'Imported',type:row['type']||'Other',qty:parseFloat(row['qty']||row['quantity']||'1')||1,buyPrice:parseFloat(row['buy price ($)']||rawAmt)||amount,mktPrice:parseFloat(row['live price ($)']||row['buy price ($)']||rawAmt)||amount,ticker:row['ticker']||'',notes:row['notes']||'Imported'});
         imported++;
-      } else if (headers.includes('source')) {
-        // Income row
-        DB.income.push({
-          id: DB.nextId(), date, amount,
-          category: row['category'] || 'Other Income',
-          source: row['source'] || 'Imported',
-          method: row['method'] || 'Bank Transfer',
-          recurring: row['recurring'] || 'One-Time',
-          notes: row['notes'] || 'Imported from CSV',
-        });
+      } else if(hasSrc){
+        DB.income.push({id:DB.nextId(),date:date,amount:amount,category:row['category']||'Other Income',source:row['source']||'Imported',method:row['method']||'Bank Transfer',recurring:row['recurring']||'One-Time',notes:row['notes']||'Imported'});
         imported++;
-      } else if (headers.includes('description')) {
-        // Expense row
-        DB.expenses.push({
-          id: DB.nextId(), date, amount,
-          category: row['category'] || 'Other Expense',
-          description: row['description'] || 'Imported',
-          method: row['method'] || 'Debit Card',
-          recurring: row['recurring'] || 'One-Time',
-          notes: row['notes'] || 'Imported from CSV',
-        });
+      } else if(hasDesc){
+        DB.expenses.push({id:DB.nextId(),date:date,amount:amount,category:row['category']||'Other Expense',description:row['description']||'Imported',method:row['method']||'Debit Card',recurring:row['recurring']||'One-Time',notes:row['notes']||'Imported'});
         imported++;
       }
-    });
-
-    if (imported > 0) {
-      refreshAll();
-      showToast(`✓ ${imported} records imported from ${entry.name}`, 'green');
-      closeModal();
-    } else {
-      showToast('Could not detect data format. Use exported CSV as template.', 'red');
     }
+    if(imported>0){closeModal();refreshAll();showToast(imported+' records imported','green');}
+    else showToast('No records found — export a CSV first to use as template','red');
   };
   reader.readAsText(entry.file);
 }
 
-function parseCSVLine(line) {
-  const result = [];
-  let cur = '', inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === '"') { inQ = !inQ; }
-    else if (c === ',' && !inQ) { result.push(cur); cur = ''; }
-    else cur += c;
+function splitLine(line){
+  var result=[],cur='',inQ=false;
+  for(var i=0;i<line.length;i++){
+    var c=line[i];
+    if(c==='"'){inQ=!inQ;}
+    else if(c===','&&!inQ){result.push(cur);cur='';}
+    else{cur+=c;}
   }
   result.push(cur);
   return result;
-}
-
-// ─────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────
-
-function today() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 </script>
